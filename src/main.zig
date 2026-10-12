@@ -1,22 +1,47 @@
 const std = @import("std");
+const args_parser = @import("args");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 const print = std.debug.print;
+const stdout = std.Io.File.stdout().writeStreamingAll;
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "dicewarelist.txt", .{});
+const diceware_args = struct {
+    number_words: u16 = 6,
+    separator: []const u8 = "",
+    capitalize: bool = false,
+    add_number: bool = false,
+    add_special: bool = false,
+    diceware: bool = false,
+    word_list: []const u8 = "dicewarelist.txt",
+
+    pub const shorthands = .{
+        .N = "number_words",
+        .S = "separator",
+        .c = "capitalize",
+        .n = "add_number",
+        .s = "add_special",
+    };
+};
+
+pub fn parse_args_v2(init: std.process.Init) diceware_args {
+    const options = args_parser.parseForCurrentProcess(diceware_args, init, .print) catch return diceware_args{};
+    defer options.deinit();
+    return options.options;
+}
+
+// Returns a AutoHashMap which we would have to deinitlize
+pub fn load_word_list(allocator: Allocator, io: Io, fileName: []const u8) !std.AutoHashMap(u32, []const u8) {
+    const file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, fileName, .{});
     defer file.close(io);
 
-    var allocator = init.gpa;
+    //buffer to load the list
     const buf = try allocator.alloc(u8, 4096);
+
+    // buffer free after loading the list is done
     defer allocator.free(buf);
+
     var reader = file.reader(io, buf);
     var map = std.AutoHashMap(u32, []const u8).init(allocator);
-    defer {
-        var it = map.valueIterator();
-        while (it.next()) |ele| allocator.free(ele.*);
-        map.deinit();
-    }
     var line_no: usize = 0;
     while (try reader.interface.takeDelimiter('\n')) |line| {
         line_no += 1;
@@ -25,37 +50,56 @@ pub fn main(init: std.process.Init) !void {
         const word = try allocator.dupe(u8, w.next().?);
         try map.put(index, word);
     }
-    const args = try init.minimal.args.toSlice(allocator);
-    defer allocator.free(args);
+    return map;
+}
 
-    if (args.len != 2) {
-        print("Usage: <number of words>", .{});
-        return;
+// pub fn generate_diceware_password(io: Io, cli_args: diceware_args) !std.ArrayList([]const u8) {}
+
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const arguments = parse_args_v2(init);
+    const file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, arguments.word_list, .{});
+    defer file.close(io);
+
+    // allocator
+    var allocator = init.gpa;
+
+    var map = try load_word_list(allocator, io, arguments.word_list);
+    defer {
+        var it = map.valueIterator();
+        while (it.next()) |ele| allocator.free(ele.*);
+        map.deinit();
     }
 
-    // std.log.w("{s}", .{args[1]});
-    const lenPass = try std.fmt.parseInt(u16, args[1][0..], 10);
+    var arrayList: std.ArrayList([]const u8) = .empty;
+    defer arrayList.deinit(allocator);
 
-    for (0..lenPass) |_| {
+    for (0..arguments.number_words) |_| {
         const randomNum = generateRandonNumber(io);
 
         const p = map.get(randomNum) orelse {
             std.log.err("{d}", .{randomNum});
             return error.NumberInvalid;
         };
-        print("{s} ", .{p});
+        try arrayList.append(allocator, p);
+    }
+
+    for (arrayList.items) |j| {
+        print("{s}", .{j});
+        if (arrayList.getLast().ptr != j.ptr) {
+            print("{s}", .{arguments.separator});
+        }
     }
 }
 
 fn generateRandonNumber(io: Io) u32 {
     const source: std.Random.IoSource = .{ .io = io };
     const random = source.interface();
-    var i: u8 = 1;
-    var randomNumber: u32 = 1;
+    var i: u8 = 0;
+    var randomNumber: u32 = 0;
     while (i < 5) {
-        const num = random.int(u32);
-        const mod = (num % 6) + 1;
-        randomNumber += mod * std.math.pow(u32, 10, i);
+        const roll = random.intRangeAtMost(u8, 1, 6);
+        randomNumber = randomNumber * 10 + roll;
         i += 1;
     }
     return randomNumber;

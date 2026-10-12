@@ -1,0 +1,4 @@
+/data
+/zig-out
+/zig-pkg
+.zig-cache
