@@ -13,7 +13,6 @@ const digits: []const u8 = &[_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', 
 
 const special: []const u8 = &[_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
 
-const all: []const u8 = lower ++ upper ++ digits ++ special;
 const diceware_args = struct {
     number_words: u16 = 6,
     separator: []const u8 = "",
@@ -22,15 +21,13 @@ const diceware_args = struct {
     add_special: bool = false,
     diceware: bool = false,
     word_list: []const u8 = "dicewarelist.txt",
+    generate: bool = false,
+    username: []const u8 = "",
 
-    pub const shorthands = .{
-        .N = "number_words",
-        .S = "separator",
-        .c = "capitalize",
-        .n = "add_number",
-        .s = "add_special",
-    };
+    pub const shorthands = .{ .N = "number_words", .S = "separator", .c = "capitalize", .n = "add_number", .s = "add_special", .u = "username", .g = "generate" };
 };
+
+const Cred = struct { username: ?[]const u8 = null, password: ?[]const u8 = null };
 
 pub fn parse_args_v2(init: std.process.Init) diceware_args {
     const options = args_parser.parseForCurrentProcess(diceware_args, init, .print) catch return diceware_args{};
@@ -90,9 +87,25 @@ pub fn generate_diceware_password(allocator: Allocator, io: Io, cli_args: dicewa
 
 pub fn password_generator(allocator: Allocator, io: Io, cli_args: diceware_args) !std.ArrayList([]const u8) {
     const buff = try allocator.alloc(u8, cli_args.number_words);
+    var all: std.ArrayList(u8) = .empty;
+    try all.appendSlice(allocator, lower);
+    // defer all.deinit(allocator);
+    if (cli_args.add_special) {
+        try all.appendSlice(allocator, special);
+    }
+    if (cli_args.add_number) {
+        try all.appendSlice(allocator, digits);
+    }
+    if (cli_args.capitalize) {
+        try all.appendSlice(allocator, upper);
+    }
+
+    const allSlice = try all.toOwnedSlice(allocator);
+    defer allocator.free(allSlice); // must free the toOwenedSlcie as the called ownes the returned memory
+
     for (0..cli_args.number_words) |i| {
         const random_number = generateRandonNumber(io);
-        buff[i] = all[random_number % (all.len - 1)];
+        buff[i] = allSlice[random_number % (allSlice.len - 1)];
     }
     var array_list: std.ArrayList([]const u8) = .empty;
     errdefer array_list.deinit(allocator);
@@ -111,22 +124,31 @@ pub fn print_password(array_list: std.ArrayList([]const u8), arguments: diceware
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arguments = parse_args_v2(init);
-
+    std.log.debug("{any} {s} {s}", .{ arguments, arguments.username, arguments.word_list });
     // allocator
     const allocator = init.gpa;
-    var array_list: std.ArrayList([]const u8) = .empty;
 
-    defer {
-        for (array_list.items) |w| allocator.free(w);
+    if (arguments.generate) {
+        var _cred: Cred = .{};
+        _cred.username = arguments.username;
+        var array_list: std.ArrayList([]const u8) = .empty;
 
-        array_list.deinit(allocator);
+        defer {
+            for (array_list.items) |w| allocator.free(w);
+
+            array_list.deinit(allocator);
+        }
+        if (arguments.diceware) {
+            array_list = try generate_diceware_password(allocator, io, arguments);
+        } else {
+            array_list = try password_generator(allocator, io, arguments);
+        }
+        const join_str = try std.mem.join(allocator, "", array_list.items);
+        _cred.password = join_str;
+        defer allocator.free(join_str);
+        // print_password(array_list, arguments);
+        std.log.debug("username:{?s} password:{?s}", .{ _cred.username, _cred.password });
     }
-    if (arguments.diceware) {
-        array_list = try generate_diceware_password(allocator, io, arguments);
-    } else {
-        array_list = try password_generator(allocator, io, arguments);
-    }
-    print_password(array_list, arguments);
 }
 
 fn generateRandonNumber(io: Io) u32 {
