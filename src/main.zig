@@ -1,5 +1,7 @@
 const std = @import("std");
 const args_parser = @import("args");
+const sqlite = @import("services/sql.zig");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const print = std.debug.print;
@@ -13,16 +15,18 @@ const digits: []const u8 = &[_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', 
 
 const special: []const u8 = &[_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
 
+const db_name: [*:0]const u8 = "data/pw.sqlite";
 const diceware_args = struct {
     number_words: u16 = 6,
     separator: []const u8 = "",
-    capitalize: bool = false,
-    add_number: bool = false,
-    add_special: bool = false,
+    capitalize: bool = true,
+    add_number: bool = true,
+    add_special: bool = true,
     diceware: bool = false,
     word_list: []const u8 = "dicewarelist.txt",
     generate: bool = false,
     username: []const u8 = "",
+    get: ?[]const u8 = null,
 
     pub const shorthands = .{ .N = "number_words", .S = "separator", .c = "capitalize", .n = "add_number", .s = "add_special", .u = "username", .g = "generate" };
 };
@@ -39,7 +43,6 @@ pub fn parse_args_v2(init: std.process.Init) diceware_args {
 pub fn load_word_list(allocator: Allocator, io: Io, fileName: []const u8) !std.AutoHashMap(u32, []const u8) {
     const file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, fileName, .{});
     defer file.close(io);
-
     //buffer to load the list
     const buf = try allocator.alloc(u8, 4096);
 
@@ -127,7 +130,9 @@ pub fn main(init: std.process.Init) !void {
     std.log.debug("{any} {s} {s}", .{ arguments, arguments.username, arguments.word_list });
     // allocator
     const allocator = init.gpa;
-
+    var _conn = try sqlite.Db.connect(db_name);
+    try _conn.initilize_pw_db(allocator, null);
+    defer _conn.deinit();
     if (arguments.generate) {
         var _cred: Cred = .{};
         _cred.username = arguments.username;
@@ -148,7 +153,14 @@ pub fn main(init: std.process.Init) !void {
         defer allocator.free(join_str);
         // print_password(array_list, arguments);
         std.log.debug("username:{?s} password:{?s}", .{ _cred.username, _cred.password });
+
+        if (_cred.username) |u| {
+            if (_cred.password) |pw| {
+                try _conn.insert_pw(allocator, u, pw);
+            }
+        }
     }
+    try get_password_copy_to_clipboard(allocator, arguments, io, &_conn);
 }
 
 fn generateRandonNumber(io: Io) u32 {
@@ -162,4 +174,44 @@ fn generateRandonNumber(io: Io) u32 {
         i += 1;
     }
     return randomNumber;
+}
+
+fn get_password_copy_to_clipboard(allocator: Allocator, arguments: diceware_args, io: Io, _conn: *sqlite.Db) !void {
+    if (arguments.get) |u| {
+        const _pw = try _conn.get_pw(allocator, u);
+        if (_pw) |_p| {
+            try copyToClipboard(io, _p);
+        } else {
+            std.log.warn("No password found with Username= {s}", .{u});
+        }
+    }
+}
+
+pub fn copyToClipboard(io: Io, text: []const u8) !void {
+    const argv = switch (builtin.os.tag) {
+        .macos => &.{"pbcopy"},
+        .linux => &.{ "xclip", "-selection", "clipboard" },
+        else => return error.UnsupportedOperatingSystem,
+    };
+
+    // Initialize the child process
+    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = .pipe, .stderr = .inherit, .stdout = .inherit });
+    var writer = child.stdin.?.writer(io, &.{});
+
+    // creates a writer
+    try writer.interface.writeAll(text);
+    // closes the stdin
+    child.stdin.?.close(io);
+
+    // sets null so that its not available
+    child.stdin = null;
+
+    // waiting it to get completed
+    const term = try child.wait(io);
+
+    // Check if the process exited with an error
+    switch (term) {
+        .exited => |code| if (code != 0) return error.ClipboardCommandFailed,
+        else => return error.ClipboardCommandInterrupted,
+    }
 }
