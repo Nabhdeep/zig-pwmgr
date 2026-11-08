@@ -4,39 +4,24 @@ const sqlite = @import("services/sql.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const encrypt = @import("encrypt.zig");
 const print = std.debug.print;
 const stdout = std.Io.File.stdout().writeStreamingAll;
-
-const lower: []const u8 = &[_]u8{ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z' };
-
-const upper: []const u8 = &[_]u8{ 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z' };
-
-const digits: []const u8 = &[_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
-
-const special: []const u8 = &[_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
-
-const db_name: [*:0]const u8 = "data/pw.sqlite";
-const diceware_args = struct {
-    number_words: u16 = 6,
-    separator: []const u8 = "",
-    capitalize: bool = true,
-    add_number: bool = true,
-    add_special: bool = true,
-    diceware: bool = false,
-    word_list: []const u8 = "dicewarelist.txt",
-    generate: bool = false,
-    username: []const u8 = "",
-    get: ?[]const u8 = null,
-
-    pub const shorthands = .{ .N = "number_words", .S = "separator", .c = "capitalize", .n = "add_number", .s = "add_special", .u = "username", .g = "generate" };
-};
-
+const types = @import("types.zig");
 const Cred = struct { username: ?[]const u8 = null, password: ?[]const u8 = null };
+const testing = std.testing;
+const expect = testing.expect;
+const Errors = types.Errors;
 
-pub fn parse_args_v2(init: std.process.Init) diceware_args {
-    const options = args_parser.parseForCurrentProcess(diceware_args, init, .print) catch return diceware_args{};
+pub fn parse_args_v2(init: std.process.Init) types.diceware_args {
+    const options = args_parser.parseForCurrentProcess(types.diceware_args, init, .print) catch return types.diceware_args{};
     defer options.deinit();
     return options.options;
+}
+
+pub fn parse_args_v3(init: std.process.Init) !?types.Verbs {
+    const options = args_parser.parseWithVerbForCurrentProcess(types.Options, types.Verbs, init, .print) catch return error.Error_Parsing_Args;
+    return options.verb;
 }
 
 // Returns a AutoHashMap which we would have to deinitlize
@@ -62,11 +47,11 @@ pub fn load_word_list(allocator: Allocator, io: Io, fileName: []const u8) !std.A
     return map;
 }
 
-pub fn generate_diceware_password(allocator: Allocator, io: Io, cli_args: diceware_args) !std.ArrayList([]const u8) {
-    const file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cli_args.word_list, .{});
+pub fn generate_diceware_password(allocator: Allocator, io: Io, cli_args: types.diceware_args) !std.ArrayList([]const u8) {
+    const file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, types.word_list, .{});
     defer file.close(io);
 
-    var map = try load_word_list(allocator, io, cli_args.word_list);
+    var map = try load_word_list(allocator, io, types.word_list);
     defer {
         var it = map.valueIterator();
         while (it.next()) |ele| allocator.free(ele.*);
@@ -88,35 +73,47 @@ pub fn generate_diceware_password(allocator: Allocator, io: Io, cli_args: dicewa
     return arrayList;
 }
 
-pub fn password_generator(allocator: Allocator, io: Io, cli_args: diceware_args) !std.ArrayList([]const u8) {
-    const buff = try allocator.alloc(u8, cli_args.number_words);
-    var all: std.ArrayList(u8) = .empty;
-    try all.appendSlice(allocator, lower);
-    // defer all.deinit(allocator);
-    if (cli_args.add_special) {
-        try all.appendSlice(allocator, special);
-    }
-    if (cli_args.add_number) {
-        try all.appendSlice(allocator, digits);
-    }
-    if (cli_args.capitalize) {
-        try all.appendSlice(allocator, upper);
-    }
-
-    const allSlice = try all.toOwnedSlice(allocator);
-    defer allocator.free(allSlice); // must free the toOwenedSlcie as the called ownes the returned memory
-
-    for (0..cli_args.number_words) |i| {
+pub fn password_generator(io: Io, buff: []u8) !void {
+    if (buff.len > 255) return Errors.PASSWORD_LENGTH_NOT_ALLOWED;
+    const all = types.lower ++ types.special ++ types.digits ++ types.upper;
+    for (buff) |*char| {
         const random_number = generateRandonNumber(io);
-        buff[i] = allSlice[random_number % (allSlice.len - 1)];
+        char.* = all[random_number % all.len];
     }
-    var array_list: std.ArrayList([]const u8) = .empty;
-    errdefer array_list.deinit(allocator);
-    try array_list.append(allocator, buff);
-    return array_list;
 }
 
-pub fn print_password(array_list: std.ArrayList([]const u8), arguments: diceware_args) void {
+test "TC-01 check password generator" {
+    var test_allocator = std.testing.allocator;
+    const test_io = std.testing.io;
+    const test_pwd_length: usize = 10;
+    const buff = try test_allocator.alloc(u8, test_pwd_length);
+    try password_generator(test_io, buff);
+    test_allocator.free(buff);
+    const comp = buff.len;
+    try testing.expectEqual(@as(usize, test_pwd_length), comp);
+}
+
+test "TC-02 check password generator zero length 0" {
+    var test_allocator = std.testing.allocator;
+    const test_io = std.testing.io;
+    const test_pwd_length: usize = 0;
+    const buff = try test_allocator.alloc(u8, test_pwd_length);
+    try password_generator(test_io, buff);
+    test_allocator.free(buff);
+    const comp = buff.len;
+    try testing.expectEqual(@as(usize, test_pwd_length), comp);
+}
+
+test "TC-03 check password generator zero length > 255" {
+    var test_allocator = std.testing.allocator;
+    const test_io = std.testing.io;
+    const test_pwd_length: usize = 256;
+    const buff = try test_allocator.alloc(u8, test_pwd_length);
+    defer test_allocator.free(buff);
+    try testing.expectError(Errors.PASSWORD_LENGTH_NOT_ALLOWED, password_generator(test_io, buff));
+}
+
+pub fn print_password(array_list: std.ArrayList([]const u8), arguments: types.diceware_args) void {
     for (array_list.items) |j| {
         print("{s}", .{j});
         if (array_list.getLast().ptr != j.ptr) {
@@ -124,43 +121,114 @@ pub fn print_password(array_list: std.ArrayList([]const u8), arguments: diceware
         }
     }
 }
+
+pub fn std_print(io: Io, comptime fmt: []const u8, args: anytype) !void {
+    var std_buff: [1024]u8 = undefined;
+    var std_writer = std.Io.File.stdout().writer(io, &std_buff);
+    const std_out = &std_writer.interface;
+    try std_out.print(fmt, args);
+    try std_out.flush();
+}
+
+pub fn std_err(io: Io, comptime fmt: []const u8, args: anytype) !void {
+    var std_buff: [1024]u8 = undefined;
+    var std_writer = std.Io.File.stderr().writer(io, &std_buff);
+    const std_out = &std_writer.interface;
+    try std_out.print(fmt, args);
+    try std_out.flush();
+}
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    const arguments = parse_args_v2(init);
-    std.log.debug("{any} {s} {s}", .{ arguments, arguments.username, arguments.word_list });
+    const arguments = parse_args_v3(init) catch |err| {
+        try std_err(io, "Failed to parse arguments: {s}\n", .{@errorName(err)});
+        return;
+    } orelse {
+        try std_err(io, "No arguments provided. Need help? --help\n", .{});
+        return;
+    };
+    std.log.debug("{any}", .{arguments});
+
     // allocator
     const allocator = init.gpa;
-    var _conn = try sqlite.Db.connect(db_name);
+    // initilize db
+    var _conn = try sqlite.Db.connect(types.db_name);
     try _conn.initilize_pw_db(allocator, null);
     defer _conn.deinit();
-    if (arguments.generate) {
-        var _cred: Cred = .{};
-        _cred.username = arguments.username;
-        var array_list: std.ArrayList([]const u8) = .empty;
 
-        defer {
-            for (array_list.items) |w| allocator.free(w);
-
-            array_list.deinit(allocator);
-        }
-        if (arguments.diceware) {
-            array_list = try generate_diceware_password(allocator, io, arguments);
-        } else {
-            array_list = try password_generator(allocator, io, arguments);
-        }
-        const join_str = try std.mem.join(allocator, "", array_list.items);
-        _cred.password = join_str;
-        defer allocator.free(join_str);
-        // print_password(array_list, arguments);
-        std.log.debug("username:{?s} password:{?s}", .{ _cred.username, _cred.password });
-
-        if (_cred.username) |u| {
-            if (_cred.password) |pw| {
-                try _conn.insert_pw(allocator, u, pw);
+    switch (arguments) {
+        .generate => |opts| {
+            if (opts.password) {
+                // only generate password and displays on the screen
+                const buff = try allocator.alloc(u8, opts.l);
+                defer allocator.free(buff);
+                password_generator(io, buff) catch |err| {
+                    switch (err) {
+                        Errors.PASSWORD_LENGTH_NOT_ALLOWED => {
+                            try std_err(io, "{s} Must be less than 256\n", .{@errorName(err)});
+                        },
+                        else => {
+                            try std_err(io, "UNKWN ERR: {s}\n", .{@errorName(err)});
+                        },
+                    }
+                    return;
+                };
+                try std_print(io, "Password: {s}", .{buff});
+                return;
             }
-        }
+            if (opts.vault) {}
+        },
+        // else => |i| {
+        //     try std_print(io, "[TODO] {any}", .{i});
+        // },
+        .get => |opts| {
+            if (opts.username.len > 0) {
+                // gets the password by username
+                get_password_copy_to_clipboard(allocator, &_conn, io, opts.username) catch |err| {
+                    switch (err) {
+                        Errors.USERNAME_NOT_FOUND => {
+                            try std_err(io, "{s}\n", .{@errorName(err)});
+                        },
+                        else => {
+                            try std_err(io, "UKNOWN GET PWD ERROR: {s}\n", .{@errorName(err)});
+                        },
+                    }
+                };
+            }
+            // if (opts.vault) {}
+        },
+        .list => |otps| {
+            if (otps.passwords) {
+                const rows: []types.Row = try list_password(allocator, &_conn);
+                defer {
+                    for (rows) |row| {
+                        if (row.username) |username| allocator.free(username);
+                        if (row.password) |password| allocator.free(password);
+                    }
+                    allocator.free(rows);
+                }
+                for (0..rows.len) |idx| {
+                    const r = rows[idx];
+                    const u = r.username orelse continue;
+                    const p = r.password orelse continue;
+                    try std_print(io, "{s} ---> {s}\n", .{ u, p });
+                }
+            }
+            // if (otps.vault) {}
+        },
+        .set => |otps| {
+            const p = otps.password orelse return Errors.INVALID_PASSWORD;
+            const u = otps.username orelse return Errors.INVALID_USERNAME;
+            try insert_password(allocator, &_conn, u, p);
+            // if (otps.vault) {}
+        },
+        .del => |opts| {
+            const u = opts.username orelse {
+                try std_err(io, "Invalid username", .{});
+                return;
+            };
+            try _conn.remove_row_with_username(allocator, u);
+        },
     }
-    try get_password_copy_to_clipboard(allocator, arguments, io, &_conn);
 }
 
 fn generateRandonNumber(io: Io) u32 {
@@ -176,15 +244,22 @@ fn generateRandonNumber(io: Io) u32 {
     return randomNumber;
 }
 
-fn get_password_copy_to_clipboard(allocator: Allocator, arguments: diceware_args, io: Io, _conn: *sqlite.Db) !void {
-    if (arguments.get) |u| {
-        const _pw = try _conn.get_pw(allocator, u);
-        if (_pw) |_p| {
-            try copyToClipboard(io, _p);
-        } else {
-            std.log.warn("No password found with Username= {s}", .{u});
-        }
+fn list_password(allocator: Allocator, _conn: *sqlite.Db) ![]types.Row {
+    const rows = try _conn.list_pw(allocator);
+    return rows;
+}
+
+fn get_password_copy_to_clipboard(allocator: Allocator, _conn: *sqlite.Db, io: Io, username: []const u8) !void {
+    const _pw = try _conn.get_pw(allocator, username);
+    if (_pw) |_p| {
+        try copyToClipboard(io, _p);
+        return;
     }
+    return Errors.USERNAME_NOT_FOUND;
+}
+
+fn insert_password(allocator: Allocator, _conn: *sqlite.Db, u: []const u8, p: []const u8) !void {
+    try _conn.insert_pw(allocator, u, p);
 }
 
 pub fn copyToClipboard(io: Io, text: []const u8) !void {

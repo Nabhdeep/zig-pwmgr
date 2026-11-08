@@ -2,6 +2,8 @@ const std = @import("std");
 const zqlite = @import("zqlite");
 const Conn = zqlite.Conn;
 const Allocator = std.mem.Allocator;
+const types = @import("../types.zig");
+const Row = types.Row;
 pub const Db = struct {
     conn: Conn,
     pw_table_name: []const u8 = "pw",
@@ -48,5 +50,24 @@ pub const Db = struct {
             return row.text(0);
         }
         return null;
+    }
+
+    pub fn list_pw(self: *Db, allocator: Allocator) ![]Row {
+        const query: []const u8 = try std.fmt.allocPrint(allocator, "SELECT * FROM \"{s}\"", .{self.pw_table_name});
+        defer allocator.free(query);
+        var _r = try self.conn.rows(query, .{});
+        var rows: std.ArrayList(Row) = .empty;
+        defer rows.deinit(allocator);
+        while (_r.next()) |r| {
+            const usr = try allocator.dupe(u8, r.text(1));
+            const pw = try allocator.dupe(u8, r.text(2));
+            try rows.append(allocator, .{ .password = pw, .username = usr });
+        }
+        return rows.toOwnedSlice(allocator);
+    }
+    pub fn remove_row_with_username(self: *Db, allocator: Allocator, u: []const u8) !void {
+        const query: []const u8 = try std.fmt.allocPrint(allocator, "DELETE FROM \"{s}\" WHERE username = ?1", .{self.pw_table_name});
+        defer allocator.free(query);
+        try self.conn.exec(query, .{u});
     }
 };
