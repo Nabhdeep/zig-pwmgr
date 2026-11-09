@@ -84,6 +84,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // adding sqlite module
+    exe.root_module.addImport("zigini", b.dependency("zigini", .{ .target = target, .optimize = optimize }).module("zigini"));
     exe.root_module.addImport("args", b.dependency("args", .{ .target = target, .optimize = optimize }).module("args"));
     exe.root_module.addImport("zqlite", b.dependency("zqlite", .{ .target = target, .optimize = optimize }).module("zqlite"));
 

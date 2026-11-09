@@ -1,0 +1,6 @@
+[WIP] PWMGR
+PWMGR is made in Zig. I started this as a Zig learning project inspired by https://www.youtube.com/watch?v=0VNJN3UdNoU (Diceware Passwords in C from Scratch). But I slowly turned it into a password manager.
+
+It's still a work in progress. This password manager has different vaults where we can save passwords (currently in plain text) in a SQLite database.
+
+In the future, I'm thinking of adding password encryption, with a Diceware password as the master passphrase for each vault.

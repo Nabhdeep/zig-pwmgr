@@ -1,3 +1,4 @@
+pub const Name = "pwmgr";
 pub const Row = struct { username: ?[]const u8, password: ?[]const u8 };
 
 pub const lower: []const u8 = &[_]u8{ 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z' };
@@ -11,7 +12,14 @@ pub const special: []const u8 = &[_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', 
 pub const db_name: [*:0]const u8 = "data/pw.sqlite";
 pub const diceware_args = struct { separator: []const u8 = "", generate: bool = false, username: []const u8 = "", value: []const u8 = "", vault: []const u8 = "", get: ?[]const u8 = null, diceware: bool = false, list: bool = false, number_words: usize = 6 };
 pub const word_list: []const u8 = "dicewarelist.txt";
-pub const Verbs = union(enum) { generate: struct { vault: bool = false, password: bool = false, l: usize = 6 }, list: struct { vault: bool = false, usernames: bool = false, passwords: bool = false }, get: struct { username: []const u8 = "", vault: []const u8 = "" }, set: struct { username: ?[]const u8 = null, password: ?[]const u8 = null, vault: ?[]const u8 = null }, del: struct { username: ?[]const u8 = null } };
+pub const Verbs = union(enum) {
+    init: struct { vault: ?[]const u8 = null },
+    generate: struct { password: bool = false, l: usize = 6, save: bool = false },
+    list: struct { vault: bool = false, usernames: bool = false, passwords: bool = false },
+    get: struct { username: []const u8 = "", vault: []const u8 = "" },
+    set: struct { username: ?[]const u8 = null, password: ?[]const u8 = null, vault: ?[]const u8 = null },
+    del: struct { username: ?[]const u8 = null, vault: ?[]const u8 = null },
+};
 
 pub const Options = struct {
     output: ?[]const u8 = null,

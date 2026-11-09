@@ -12,6 +12,9 @@ const Cred = struct { username: ?[]const u8 = null, password: ?[]const u8 = null
 const testing = std.testing;
 const expect = testing.expect;
 const Errors = types.Errors;
+const zigini = @import("zigini");
+const Config = @import("Config.zig");
+const encrypt = @import("encrypt.zig");
 
 pub fn parse_args_v2(init: std.process.Init) types.diceware_args {
     const options = args_parser.parseForCurrentProcess(types.diceware_args, init, .print) catch return types.diceware_args{};
@@ -137,8 +140,17 @@ pub fn std_err(io: Io, comptime fmt: []const u8, args: anytype) !void {
     try std_out.print(fmt, args);
     try std_out.flush();
 }
+pub fn std_in(allocator: Allocator, io: Io, question: []const u8) ![]u8 {
+    var in_buff: [1024]u8 = undefined;
+    var in_reader = std.Io.File.reader(.stdin(), io, &in_buff);
+    try std_print(io, "{s}", .{question});
+    const line = try in_reader.interface.takeDelimiter('\n') orelse return "";
+    std.log.debug("In line: {s}", .{line});
+    return allocator.dupe(u8, line);
+}
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+    const allocator = init.gpa;
     const arguments = parse_args_v3(init) catch |err| {
         try std_err(io, "Failed to parse arguments: {s}\n", .{@errorName(err)});
         return;
@@ -147,9 +159,21 @@ pub fn main(init: std.process.Init) !void {
         return;
     };
     std.log.debug("{any}", .{arguments});
-
+    // config home
+    const config_dir = init.environ_map.get("XDG_DATA_HOME") orelse fallback: {
+        const p = init.environ_map.get("HOME") orelse {
+            try std_err(io, "Unbale to get home dir\n", .{});
+            return;
+        };
+        const path = try std.fs.path.join(
+            allocator,
+            &.{ p, ".local", "share" },
+        );
+        break :fallback path;
+    };
+    defer allocator.free(config_dir);
+    std.log.debug("BaseDir: {s}", .{config_dir});
     // allocator
-    const allocator = init.gpa;
     // initilize db
     var _conn = try sqlite.Db.connect(types.db_name);
     try _conn.initilize_pw_db(allocator, null);
@@ -161,6 +185,7 @@ pub fn main(init: std.process.Init) !void {
                 // only generate password and displays on the screen
                 const buff = try allocator.alloc(u8, opts.l);
                 defer allocator.free(buff);
+                // password is saved in buff
                 password_generator(io, buff) catch |err| {
                     switch (err) {
                         Errors.PASSWORD_LENGTH_NOT_ALLOWED => {
@@ -172,14 +197,19 @@ pub fn main(init: std.process.Init) !void {
                     }
                     return;
                 };
-                try std_print(io, "Password: {s}", .{buff});
+
+                if (opts.save) {
+                    const line = try std_in(allocator, io, "Username: ");
+                    defer allocator.free(line);
+                    if (line.len == 0) return Errors.INVALID_USERNAME;
+                    try insert_password(allocator, &_conn, line, buff);
+                    return;
+                } else {
+                    try std_print(io, "{s}", .{buff});
+                }
                 return;
             }
-            if (opts.vault) {}
         },
-        // else => |i| {
-        //     try std_print(io, "[TODO] {any}", .{i});
-        // },
         .get => |opts| {
             if (opts.username.len > 0) {
                 // gets the password by username
@@ -213,22 +243,143 @@ pub fn main(init: std.process.Init) !void {
                     try std_print(io, "{s} ---> {s}\n", .{ u, p });
                 }
             }
-            // if (otps.vault) {}
+            if (otps.vault) {
+                try list_vault(allocator, io, config_dir);
+            }
         },
         .set => |otps| {
-            const p = otps.password orelse return Errors.INVALID_PASSWORD;
-            const u = otps.username orelse return Errors.INVALID_USERNAME;
-            try insert_password(allocator, &_conn, u, p);
+            user_pw: {
+                const p = otps.password orelse break :user_pw;
+                const u = otps.username orelse break :user_pw;
+                try insert_password(allocator, &_conn, u, p);
+            }
+            // vault: {
+            //     const v = otps.vault orelse break :vault;
+            // }
             // if (otps.vault) {}
         },
         .del => |opts| {
-            const u = opts.username orelse {
-                try std_err(io, "Invalid username", .{});
-                return;
-            };
-            try _conn.remove_row_with_username(allocator, u);
+            username: {
+                const u = opts.username orelse break :username;
+                try _conn.remove_row_with_username(allocator, u);
+            }
+
+            vault: {
+                const vault_name = opts.vault orelse break :vault;
+                delete_vault(allocator, io, vault_name, config_dir) catch |err| {
+                    switch (err) {
+                        error.FileNotFound => {
+                            try std_err(io, "File not found\n", .{});
+                        },
+                        else => {
+                            try std_err(io, "Unkown del error: {s}\n", .{@errorName(err)});
+                        },
+                    }
+                };
+            }
+        },
+        .init => |opts| {
+            vault: {
+                const value_name = opts.vault orelse break :vault;
+                create_vault(allocator, io, value_name, config_dir) catch |err| switch (err) {
+                    error.PathAlreadyExists => {
+                        try std_err(io, "Vault Already exist\n", .{});
+                        return;
+                    },
+                    else => {
+                        try std_err(io, "Create Vault Error: {s}\n", .{@errorName(err)});
+                        return;
+                    },
+                };
+                try create_config_file(allocator, io, "config", config_dir);
+            }
+            // switch (opts) {
+            //     .vault => |v| {
+            //         std.log.debug("Vault: {v}", .{v.vault.n});
+            //         // try create_vault(allocator, io, v, config_dir);
+            //     },
+            // }
         },
     }
+}
+
+fn create_config_file(allocator: Allocator, io: Io, config_file_name: []const u8, base_dir: []const u8) !void {
+    return create_file(allocator, io, base_dir, config_file_name, ".ini");
+}
+
+fn read_config(allocator: Allocator, io: Io, path: []const u8) !void {
+    const pwmgr_config_reader = zigini.Ini(Config).init(allocator);
+    defer pwmgr_config_reader.deinit();
+    _ = try pwmgr_config_reader.readFileToStruct(io, path, .{});
+}
+
+fn input_value_config_file(allocator: Allocator, io: Io, path: []const u8, update: Config) !void {
+    const pwmgr_config_reader = zigini.Ini(Config).init(allocator);
+    defer pwmgr_config_reader.deinit();
+    const config = try pwmgr_config_reader.readFileToStruct(io, path, .{});
+    var std_buff: [1024]u8 = undefined;
+    var std_writer = std.Io.File.stdout().writer(io, &std_buff);
+    const std_out = &std_writer.interface;
+    if (update.vault_name.len > 0) {
+        config.value_name = update.value_name;
+    } else {
+        return;
+    }
+    try zigini.writeFromStruct(config, std_out, null, .{});
+    return;
+}
+
+fn create_file(allocator: Allocator, io: Io, base_dir: []const u8, name: []const u8, ext: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+
+    const file_name = try std.mem.concat(allocator, u8, &.{ name, ext });
+    defer allocator.free(file_name);
+
+    const full_path = try std.fs.path.join(allocator, &.{ base_dir, types.Name });
+    defer allocator.free(full_path);
+
+    const full_path_and_file = try std.fs.path.join(allocator, &.{ full_path, file_name });
+    defer allocator.free(full_path_and_file);
+
+    std.log.warn("{s}", .{full_path});
+    try cwd.createDirPath(io, full_path);
+    _ = try cwd.createFile(io, full_path_and_file, .{ .exclusive = true });
+    return;
+}
+
+fn create_vault(allocator: Allocator, io: Io, name: []const u8, base_dir: []const u8) !void {
+    return create_file(allocator, io, base_dir, name, ".sqlite");
+}
+
+fn list_vault(allocator: Allocator, io: Io, base_dir: []const u8) !void {
+    const full_path = try std.fs.path.join(allocator, &.{ base_dir, types.Name });
+    defer allocator.free(full_path);
+
+    const dir = try std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+    while (try walker.next(io)) |w| {
+        if (w.kind == .file and std.mem.endsWith(u8, w.basename, ".sqlite")) {
+            try std_print(io, "{d}: {s}\n", .{ w.depth(), w.basename[0 .. w.basename.len - 7] });
+        }
+    }
+}
+
+fn delete_vault(allocator: Allocator, io: Io, name: []const u8, base_dir: []const u8) !void {
+    const file_name = try std.mem.concat(allocator, u8, &.{ name, ".sqlite" });
+    defer allocator.free(file_name);
+
+    const full_path = try std.fs.path.join(allocator, &.{ base_dir, types.Name });
+    defer allocator.free(full_path);
+
+    const dir = try std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    const delete_path = try std.fs.path.join(allocator, &.{ full_path, file_name });
+    defer allocator.free(delete_path);
+    try dir.deleteFile(io, delete_path);
 }
 
 fn generateRandonNumber(io: Io) u32 {

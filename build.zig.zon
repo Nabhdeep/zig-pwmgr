@@ -40,6 +40,10 @@
             .url = "git+https://github.com/karlseguin/zqlite.zig?ref=master#865223b734a5113f731ab1eb1d7d81c8ac252913",
             .hash = "zqlite-0.0.1-RWLaY4Y8nADz2l5aBE-JVyDyM3sZzHjq0agNykuVZKqQ",
         },
+        .zigini = .{
+            .url = "git+https://github.com/ashametrine/zigini#9d0a918c4d2f55bac05ddc9524fcaed7c2279d6c",
+            .hash = "zigini-0.6.0-BSkB7UtYAADFPMY2JFpY0cb2ozdua0J4nARLZguCzrA8",
+        },
     },
     .paths = .{
         "build.zig",
