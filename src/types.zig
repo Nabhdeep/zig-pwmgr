@@ -10,6 +10,7 @@ pub const digits: []const u8 = &[_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '
 pub const special: []const u8 = &[_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
 
 pub const db_name: [*:0]const u8 = "data/pw.sqlite";
+pub const test_db_name: [*:0]const u8 = "data/test.sqlite";
 pub const diceware_args = struct { separator: []const u8 = "", generate: bool = false, username: []const u8 = "", value: []const u8 = "", vault: []const u8 = "", get: ?[]const u8 = null, diceware: bool = false, list: bool = false, number_words: usize = 6 };
 pub const word_list: []const u8 = "dicewarelist.txt";
 pub const Verbs = union(enum) {
@@ -28,4 +29,19 @@ pub const Options = struct {
     };
 };
 
-pub const Errors = error{ PASSWORD_LENGTH_NOT_ALLOWED, USERNAME_NOT_FOUND, INVALID_PASSWORD, INVALID_USERNAME };
+pub const Errors = error{
+    PASSWORD_LENGTH_NOT_ALLOWED,
+    USERNAME_NOT_FOUND,
+    INVALID_PASSWORD,
+    INVALID_USERNAME,
+    DATABASEOPENFAILED,
+};
+pub const Db_Errors = error{
+    DatabaseOpenFailed,
+    PrepareFailed,
+    BindFailed,
+    InsertFailed,
+    GetFailed,
+    NullPointer,
+    DeletionFailed,
+};

@@ -4,7 +4,6 @@ const sqlite = @import("services/sql.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const encrypt = @import("encrypt.zig");
 const print = std.debug.print;
 const stdout = std.Io.File.stdout().writeStreamingAll;
 const types = @import("types.zig");
@@ -15,6 +14,7 @@ const Errors = types.Errors;
 const zigini = @import("zigini");
 const Config = @import("Config.zig");
 const encrypt = @import("encrypt.zig");
+const sqlC = @import("./services/sqlC.zig");
 
 pub fn parse_args_v2(init: std.process.Init) types.diceware_args {
     const options = args_parser.parseForCurrentProcess(types.diceware_args, init, .print) catch return types.diceware_args{};
