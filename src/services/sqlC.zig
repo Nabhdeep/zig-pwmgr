@@ -18,6 +18,7 @@ pub const Db = struct {
 
     pub fn connect(path: [*:0]const u8) !Db {
         // fn sqlite3_open(filename: [*c]const u8, ppDb: [*c]?*struct_sqlite3) c_int
+        std.log.debug("{s}\n", .{path});
         var _conn: ?*sqlcipher.struct_sqlite3 = null;
         // const flags = zqlite.OpenFlags.Create | zqlite.OpenFlags.EXResCode;
         // var _conn = try zqlite.open(path, flags);
@@ -29,8 +30,23 @@ pub const Db = struct {
         return .{ .conn = conn };
     }
 
-    pub fn deinit(self: *Db) void {
-        self.conn.close();
+    pub fn deinit(self: *Db) !void {
+        if (self.conn.close() != SQLITE_OK) {
+            return e.CloseError;
+        }
+    }
+
+    pub fn key_check(self: *Db, key: *const anyopaque, kLen: usize) !void {
+        // https://sqlite.org/com/see.html
+        // check just after the connection
+        const result = sqlcipher.sqlite3_key(self.conn, key, @intCast(kLen));
+        switch (result) {
+            SQLITE_OK => return,
+            else => {
+                std.debug.print("Passpharse Error: {s}\n", .{sqlcipher.sqlite3_errmsg(self.conn)});
+                return e.InvalidPassphrase;
+            },
+        }
     }
 
     pub fn initilize_pw_db(self: *Db, allocator: Allocator, name: ?[]const u8) !void {

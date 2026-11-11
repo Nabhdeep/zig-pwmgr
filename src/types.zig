@@ -35,6 +35,7 @@ pub const Errors = error{
     INVALID_PASSWORD,
     INVALID_USERNAME,
     DATABASEOPENFAILED,
+    CofigPathFailed,
 };
 pub const Db_Errors = error{
     DatabaseOpenFailed,
@@ -44,4 +45,6 @@ pub const Db_Errors = error{
     GetFailed,
     NullPointer,
     DeletionFailed,
+    InvalidPassphrase,
+    CloseError,
 };

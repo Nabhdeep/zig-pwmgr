@@ -48,6 +48,10 @@
             .url = "git+https://codeberg.org/ziglang/translate-c#d6832bfb2c026a982c461a36c236acf5b42f7979",
             .hash = "translate_c-0.1.0-dev-Q_BUWrFkBwC9UVgGBjismDDMoGLreIbDTRZzq2IqAxym",
         },
+        .toml = .{
+            .url = "git+https://github.com/sam701/zig-toml?ref=zig-0.17#4a13e49ce7d19ac2df8b87962d9f23c0f5dd5bdd",
+            .hash = "toml-0.3.0-bV14BRmkAQDSILPPyXc31aAXPtJa1Uh8Frug3i6InAUc",
+        },
     },
     .paths = .{
         "build.zig",

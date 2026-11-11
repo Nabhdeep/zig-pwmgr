@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
             // definition if desireable (e.g. firmware for embedded devices).
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
@@ -84,6 +85,9 @@ pub fn build(b: *std.Build) void {
     });
 
     // adding sqlite module
+    exe.root_module.link_libc = true;
+    exe.root_module.linkSystemLibrary("sqlcipher", .{});
+    exe.root_module.addImport("toml", b.dependency("toml", .{ .target = target, .optimize = optimize }).module("toml"));
     exe.root_module.addImport("zigini", b.dependency("zigini", .{ .target = target, .optimize = optimize }).module("zigini"));
     exe.root_module.addImport("args", b.dependency("args", .{ .target = target, .optimize = optimize }).module("args"));
     exe.root_module.addImport("zqlite", b.dependency("zqlite", .{ .target = target, .optimize = optimize }).module("zqlite"));

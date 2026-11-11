@@ -1,6 +1,6 @@
 const std = @import("std");
 const args_parser = @import("args");
-const sqlite = @import("services/sql.zig");
+// const sqlite = @import("services/sql.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -12,10 +12,10 @@ const testing = std.testing;
 const expect = testing.expect;
 const Errors = types.Errors;
 const zigini = @import("zigini");
-const Config = @import("Config.zig");
+const Config = @import("Config.zig").Config;
 const encrypt = @import("encrypt.zig");
 const sqlC = @import("./services/sqlC.zig");
-
+const toml = @import("toml");
 pub fn parse_args_v2(init: std.process.Init) types.diceware_args {
     const options = args_parser.parseForCurrentProcess(types.diceware_args, init, .print) catch return types.diceware_args{};
     defer options.deinit();
@@ -148,6 +148,57 @@ pub fn std_in(allocator: Allocator, io: Io, question: []const u8) ![]u8 {
     std.log.debug("In line: {s}", .{line});
     return allocator.dupe(u8, line);
 }
+
+pub fn ask_password(allocator: Allocator, io: Io, buff: []u8) !usize {
+    const _key = try std_in(allocator, io, "Passphrase: ");
+    defer allocator.free(_key);
+    @memcpy(buff[0.._key.len], _key);
+    return _key.len;
+}
+
+// test "TC_01: check ask_password " {
+//     const allocator = testing.allocator;
+//     const io = testing.io;
+//     var buff: [256]u8 = undefined;
+//     const p_zi = try ask_password(allocator, io, &buff);
+//     try testing.expectEqualStrings("password", buff[0..p_zi]);
+// }
+
+pub fn get_basr_dir(init: std.process.Init) !?[]const u8 {
+    const config_dir = init.environ_map.get("XDG_DATA_HOME") orelse fallback: {
+        const p = init.environ_map.get("HOME") orelse {
+            try std_err(init.io, "Unbale to get home dir\n", .{});
+            return null;
+        };
+        const path = try std.fs.path.join(
+            init.gpa,
+            &.{ p, ".local", "share" },
+        );
+        break :fallback path;
+    };
+
+    return config_dir;
+}
+
+pub fn get_config(init: std.process.Init) !toml.Parsed(Config) {
+    var parser = toml.Parser(Config).init(init.gpa);
+    defer parser.deinit();
+    const config_dir = try get_basr_dir(init) orelse {
+        return Errors.CofigPathFailed;
+    };
+    defer init.gpa.free(config_dir);
+    const file_path = try std.fs.path.join(
+        init.gpa,
+        &.{ config_dir, "pwmgr", "config.toml" },
+    );
+    defer init.gpa.free(file_path);
+    std.log.debug("Base Config path: {s}\n", .{file_path});
+    return parser.parseFile(init.io, file_path);
+}
+// for now using  toml file which is parsed
+// TODO: Statefull password so that its not asked multiple times
+// TODO: Create config file and config flow
+// TODO: check for null config
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
@@ -158,26 +209,34 @@ pub fn main(init: std.process.Init) !void {
         try std_err(io, "No arguments provided. Need help? --help\n", .{});
         return;
     };
-    std.log.debug("{any}", .{arguments});
+    std.log.debug("Args: {any}", .{arguments});
     // config home
-    const config_dir = init.environ_map.get("XDG_DATA_HOME") orelse fallback: {
-        const p = init.environ_map.get("HOME") orelse {
-            try std_err(io, "Unbale to get home dir\n", .{});
-            return;
-        };
-        const path = try std.fs.path.join(
-            allocator,
-            &.{ p, ".local", "share" },
-        );
-        break :fallback path;
-    };
-    defer allocator.free(config_dir);
-    std.log.debug("BaseDir: {s}", .{config_dir});
+    const parsed = try get_config(init);
+    const config = parsed.value;
+    defer parsed.deinit();
+    std.log.debug("BaseDir: {any}", .{config});
     // allocator
     // initilize db
-    var _conn = try sqlite.Db.connect(types.db_name);
+    const cg = try std.fmt.allocPrintSentinel(allocator, "{s}/newdb.sqlite", .{config.base_dir}, 0);
+    defer allocator.free(cg);
+
+    // DB connection
+    var _conn = try sqlC.Db.connect(cg);
+
+    var passphrase_buff: [256]u8 = undefined;
+    defer @memset(&passphrase_buff, 0);
+
+    const passphrase_len = try ask_password(allocator, io, &passphrase_buff);
+
+    const passphrase = passphrase_buff[0..passphrase_len];
+    try _conn.key_check(passphrase.ptr, passphrase.len);
+
     try _conn.initilize_pw_db(allocator, null);
-    defer _conn.deinit();
+    defer {
+        _ = _conn.deinit() catch {
+            std.log.err("DB Close Error:\n", .{});
+        };
+    }
 
     switch (arguments) {
         .generate => |opts| {
@@ -244,7 +303,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
             if (otps.vault) {
-                try list_vault(allocator, io, config_dir);
+                try list_vault(allocator, io, config.base_dir);
             }
         },
         .set => |otps| {
@@ -261,12 +320,14 @@ pub fn main(init: std.process.Init) !void {
         .del => |opts| {
             username: {
                 const u = opts.username orelse break :username;
-                try _conn.remove_row_with_username(allocator, u);
+                const _u = try get_sentinel_string(allocator, u);
+                defer allocator.free(_u);
+                try _conn.remove_row_with_username(allocator, _u);
             }
 
             vault: {
                 const vault_name = opts.vault orelse break :vault;
-                delete_vault(allocator, io, vault_name, config_dir) catch |err| {
+                delete_vault(allocator, io, vault_name, config.base_dir) catch |err| {
                     switch (err) {
                         error.FileNotFound => {
                             try std_err(io, "File not found\n", .{});
@@ -281,7 +342,7 @@ pub fn main(init: std.process.Init) !void {
         .init => |opts| {
             vault: {
                 const value_name = opts.vault orelse break :vault;
-                create_vault(allocator, io, value_name, config_dir) catch |err| switch (err) {
+                create_vault(allocator, io, value_name, config.base_dir) catch |err| switch (err) {
                     error.PathAlreadyExists => {
                         try std_err(io, "Vault Already exist\n", .{});
                         return;
@@ -291,7 +352,7 @@ pub fn main(init: std.process.Init) !void {
                         return;
                     },
                 };
-                try create_config_file(allocator, io, "config", config_dir);
+                try create_config_file(allocator, io, "config", config.base_dir);
             }
             // switch (opts) {
             //     .vault => |v| {
@@ -321,7 +382,7 @@ fn input_value_config_file(allocator: Allocator, io: Io, path: []const u8, updat
     var std_writer = std.Io.File.stdout().writer(io, &std_buff);
     const std_out = &std_writer.interface;
     if (update.vault_name.len > 0) {
-        config.value_name = update.value_name;
+        config.vault_name = update.vault_name;
     } else {
         return;
     }
@@ -335,14 +396,11 @@ fn create_file(allocator: Allocator, io: Io, base_dir: []const u8, name: []const
     const file_name = try std.mem.concat(allocator, u8, &.{ name, ext });
     defer allocator.free(file_name);
 
-    const full_path = try std.fs.path.join(allocator, &.{ base_dir, types.Name });
-    defer allocator.free(full_path);
-
-    const full_path_and_file = try std.fs.path.join(allocator, &.{ full_path, file_name });
+    const full_path_and_file = try std.fs.path.join(allocator, &.{ base_dir, file_name });
     defer allocator.free(full_path_and_file);
 
-    std.log.warn("{s}", .{full_path});
-    try cwd.createDirPath(io, full_path);
+    std.log.warn("{s}", .{base_dir});
+    try cwd.createDirPath(io, base_dir);
     _ = try cwd.createFile(io, full_path_and_file, .{ .exclusive = true });
     return;
 }
@@ -371,13 +429,10 @@ fn delete_vault(allocator: Allocator, io: Io, name: []const u8, base_dir: []cons
     const file_name = try std.mem.concat(allocator, u8, &.{ name, ".sqlite" });
     defer allocator.free(file_name);
 
-    const full_path = try std.fs.path.join(allocator, &.{ base_dir, types.Name });
-    defer allocator.free(full_path);
-
-    const dir = try std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true });
+    const dir = try std.Io.Dir.cwd().openDir(io, base_dir, .{ .iterate = true });
     defer dir.close(io);
 
-    const delete_path = try std.fs.path.join(allocator, &.{ full_path, file_name });
+    const delete_path = try std.fs.path.join(allocator, &.{ base_dir, file_name });
     defer allocator.free(delete_path);
     try dir.deleteFile(io, delete_path);
 }
@@ -395,22 +450,32 @@ fn generateRandonNumber(io: Io) u32 {
     return randomNumber;
 }
 
-fn list_password(allocator: Allocator, _conn: *sqlite.Db) ![]types.Row {
+fn list_password(allocator: Allocator, _conn: *sqlC.Db) ![]types.Row {
     const rows = try _conn.list_pw(allocator);
     return rows;
 }
 
-fn get_password_copy_to_clipboard(allocator: Allocator, _conn: *sqlite.Db, io: Io, username: []const u8) !void {
-    const _pw = try _conn.get_pw(allocator, username);
-    if (_pw) |_p| {
-        try copyToClipboard(io, _p);
-        return;
-    }
-    return Errors.USERNAME_NOT_FOUND;
+fn get_password_copy_to_clipboard(allocator: Allocator, _conn: *sqlC.Db, io: Io, username: []const u8) !void {
+    const _u = try get_sentinel_string(allocator, username);
+    defer allocator.free(_u);
+    const _pw = try _conn.get_pw(allocator, _u) orelse return Errors.USERNAME_NOT_FOUND;
+    defer allocator.free(_pw);
+    try copyToClipboard(io, _pw);
+    return;
 }
 
-fn insert_password(allocator: Allocator, _conn: *sqlite.Db, u: []const u8, p: []const u8) !void {
-    try _conn.insert_pw(allocator, u, p);
+fn insert_password(allocator: Allocator, _conn: *sqlC.Db, u: []const u8, p: []const u8) !void {
+    const _u = try get_sentinel_string(allocator, u);
+    const _p = try get_sentinel_string(allocator, p);
+    defer {
+        allocator.free(_u);
+        allocator.free(_p);
+    }
+    try _conn.insert_pw(allocator, _u, _p);
+}
+
+fn get_sentinel_string(allocator: Allocator, u: []const u8) ![:0]const u8 {
+    return allocator.dupeSentinel(u8, u, 0);
 }
 
 pub fn copyToClipboard(io: Io, text: []const u8) !void {
